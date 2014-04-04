@@ -4,7 +4,8 @@ import (
 	"code.google.com/p/godec/dec"
 	"encoding/csv"
 	"errors"
-	"fmt"
+	_"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strings"
@@ -43,27 +44,18 @@ func NewUsd(s string) (*Usd, error) {
 
 type Trade struct {
 	Timestamp	time.Time
-	Amount		Btc
-	Price		Usd
+	Amount		*Btc
+	Price		*Usd
 	// fee
 }
 
-type Buy struct {
-	*Trade
+func NewTrade(t time.Time, b *Btc, u *Usd) *Trade {
+	trade := new(Trade)
+	trade.Timestamp = t
+	trade.Amount = b
+	trade.Price = u
+	return trade
 }
-
-type Sell struct {
-	*Trade
-}
-
-type Trader interface {
-	Funsies()
-}
-
-func (b Buy) Funsies() {}
-
-func (s Sell) Funsies() {}
-
 
 type CoinbaseCsvReader struct {
 	reader 		*csv.Reader
@@ -77,7 +69,7 @@ func NewCoinbaseCsvReader(r *csv.Reader) *CoinbaseCsvReader {
 	return c
 }
 
-func (c *CoinbaseCsvReader) Read() (Trader, error) {
+func (c *CoinbaseCsvReader) Read() (*Trade, error) {
 	if !c.headersRead {
 		for i := 0; i < 3; i++ {
 			_, err := c.reader.Read()
@@ -123,11 +115,26 @@ func (c *CoinbaseCsvReader) Read() (Trader, error) {
 			}
 		}
 
-		fmt.Printf("I traded %s btc for %s usd on %s\n", b, u, t)
-
-		return new(Buy), nil //FIXME
+		return NewTrade(t, b, u), nil
 	}
 	panic("This can't happen")
+}
+
+type LedgerDatWriter struct {
+	writer 		io.WriteCloser
+	trades		[]*Trade
+}
+
+func NewLedgerDatWriter(w io.WriteCloser) *LedgerDatWriter {
+	l := new(LedgerDatWriter)
+	l.writer = w
+	l.trades = make([]*Trade, 0)
+	return l
+}
+
+func (l *LedgerDatWriter) Write(t *Trade) error {
+	l.writer.Write([]byte("HI"))
+	return nil
 }
 
 func main() {
@@ -138,8 +145,22 @@ func main() {
 	csv_reader := csv.NewReader(file)
 	coinbase_reader := NewCoinbaseCsvReader(csv_reader)
 
+	file, err = os.Create("ledger.dat")
+	if err != nil {
+		panic(err)
+	}
+	ledger_writer := NewLedgerDatWriter(file)
+
+	var t *Trade
 	for {
-		_, err = coinbase_reader.Read()
+		t, err = coinbase_reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			panic(err)
+		}
+		err = ledger_writer.Write(t)
 		if err != nil {
 			panic(err)
 		}
