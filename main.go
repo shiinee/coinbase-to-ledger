@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math/big"
 	"code.google.com/p/godec/dec"
 	"encoding/csv"
 	"errors"
@@ -30,16 +31,17 @@ type Trade struct {
 	BtcAmount		*dec.Dec
 	TotalPrice		*dec.Dec
 	PricePerBitcoin *dec.Dec
-	//TransferFee		*dec.Dec
+	TransferFee		*dec.Dec
 }
 
-func NewTrade(t time.Time, b *dec.Dec, u *dec.Dec) *Trade {
+func NewTrade(t time.Time, b *dec.Dec, u *dec.Dec, f *dec.Dec) *Trade {
 	trade := new(Trade)
 	trade.Timestamp = t
 	trade.BtcAmount = b
 	trade.TotalPrice = u
-	//trade.TransferFee = f
-	trade.PricePerBitcoin = new(dec.Dec).Abs(new(dec.Dec).Quo(trade.TotalPrice, trade.BtcAmount, 
+	trade.TransferFee = f
+	originalPrice := new(dec.Dec).Sub(trade.TotalPrice, trade.TransferFee)
+	trade.PricePerBitcoin = new(dec.Dec).Abs(new(dec.Dec).Quo(originalPrice, trade.BtcAmount, 
 		dec.Scale(2), dec.RoundHalfUp))
 	return trade
 }
@@ -87,8 +89,13 @@ func (c *CoinbaseCsvReader) Read() (*Trade, error) {
 			return nil, err
 		}
 
-		var u *dec.Dec
+		var u, f *dec.Dec
 		if row[5] == "" {
+			/* For some reason, the format changes in the middle of the exported transactions
+			   list. The columns for USD total and fee are blank. The total is in the 
+			   description, and we can calculate the fee based on our insider knowledge of
+			   Coinbase's fee structure. 
+			*/
 			matches := validDescription.FindStringSubmatch(row[4])
 			if len(matches) > 0 {
 				usd_no_fucking_commas := strings.Replace(matches[4], ",", "", -1)
@@ -96,6 +103,11 @@ func (c *CoinbaseCsvReader) Read() (*Trade, error) {
 				if err != nil {
 					return nil, err
 				}
+				bankFee := dec.NewDec(big.NewInt(15), dec.Scale(2))
+				coinbaseFeePercent := dec.NewDec(big.NewInt(101), dec.Scale(2))
+				subtotal := new(dec.Dec).Quo(new(dec.Dec).Sub(u, bankFee), coinbaseFeePercent, 
+					dec.Scale(2), dec.RoundHalfUp)
+				f = new(dec.Dec).Sub(u, subtotal)
 			} else {
 				continue
 			}
@@ -104,9 +116,14 @@ func (c *CoinbaseCsvReader) Read() (*Trade, error) {
 			if err != nil {
 				return nil, err
 			}
+
+			f, err = NewDec(row[7])
+			if err != nil {
+				return nil, err
+			}
 		}
 
-		return NewTrade(t, b, u), nil
+		return NewTrade(t, b, u, f), nil
 	}
 	panic("This can't happen")
 }
@@ -134,7 +151,8 @@ func (l *LedgerDatWriter) Write(t *Trade) error {
 		l.trades = append(l.trades, t)
 		entry = fmt.Sprintf("%s\tBitcoin bought\n", t.Timestamp.Format(dateFormat)) +
 			fmt.Sprintf("\tAssets:Coinbase\t%s BTC {$ %s}\n", t.BtcAmount, t.PricePerBitcoin) +
-			fmt.Sprintf("\tAssets:Cash\t-$ %s\n\n", t.TotalPrice) 
+			fmt.Sprintf("\tAssets:Cash\t-$ %s\n", t.TotalPrice) +
+			fmt.Sprintf("\tExpenses:Fees\t$ %s\n\n", t.TransferFee)
 	} else {
 		entry = fmt.Sprintf("%s\tBitcoin sold\n", t.Timestamp.Format(dateFormat))
 		lotSize := new(dec.Dec)
@@ -149,11 +167,15 @@ func (l *LedgerDatWriter) Write(t *Trade) error {
 				lotSize.Neg(b.BtcAmount)
 				l.trades = l.trades[1:]
 			}
-			capitalGains.Sub(capitalGains, new(dec.Dec).Mul(new(dec.Dec).Neg(lotSize), b.PricePerBitcoin))
+			lotPrice := new(dec.Dec).Mul(new(dec.Dec).Neg(lotSize), b.PricePerBitcoin)
+			lotPrice.Round(lotPrice, dec.Scale(2), dec.RoundHalfUp)
+			capitalGains.Sub(capitalGains, lotPrice)
 			entry += fmt.Sprintf("\tAssets:Coinbase\t%s BTC {$ %s} @ $ %s\n", lotSize, b.PricePerBitcoin, 
 				t.PricePerBitcoin)
 		}
+		capitalGains.Sub(capitalGains, t.TransferFee)
 		entry += fmt.Sprintf("\tAssets:Cash\t$ %s\n", t.TotalPrice) +
+			fmt.Sprintf("\tExpenses:Fees\t$ %s\n", t.TransferFee) +
 			fmt.Sprintf("\tIncome:Capital Gains\t$ -%s\n\n", capitalGains)
 	}
 	return l.writeString(entry)
