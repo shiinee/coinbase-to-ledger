@@ -173,7 +173,7 @@ func (l *LedgerDatWriter) Write(t *Trade) error {
 			entry += fmt.Sprintf("\tAssets:Coinbase\t%s BTC {$ %s} @ $ %s\n", lotSize, b.PricePerBitcoin, 
 				t.PricePerBitcoin)
 		}
-		capitalGains.Sub(capitalGains, t.TransferFee)
+		capitalGains.Add(capitalGains, t.TransferFee)
 		entry += fmt.Sprintf("\tAssets:Cash\t$ %s\n", t.TotalPrice) +
 			fmt.Sprintf("\tExpenses:Fees\t$ %s\n", t.TransferFee) +
 			fmt.Sprintf("\tIncome:Capital Gains\t$ -%s\n\n", capitalGains)
